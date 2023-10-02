@@ -1,16 +1,99 @@
-use std::{cmp, fs};
+use std::{cmp, fs, usize};
 
 use std::hash::Hash;
 
-use chiquito::frontend::dsl::circuit;
-use chiquito::plonkish::ir::assignments::AssignmentGenerator;
+use chiquito::ast::query::Queriable;
+use chiquito::ast::Expr;
+use chiquito::{
+    ast::ToField,           // compiled circuit type
+    frontend::dsl::circuit, // main function for constructing an AST circuit
+    plonkish::backend::halo2::{chiquito2Halo2, ChiquitoHalo2Circuit}, /* compiles to
+                             * Chiquito Halo2
+                             * backend,
+                             * which can be
+                             * integrated into
+                             * Halo2
+                             * circuit */
+    plonkish::compiler::{
+        cell_manager::SingleRowCellManager, // input for constructing the compiler
+        compile,                            // input for constructing the compiler
+        config,
+        step_selector::SimpleStepSelectorBuilder,
+    },
+    plonkish::ir::{assignments::AssignmentGenerator, Circuit},
+};
+use halo2_proofs::{dev::MockProver, halo2curves::bn256::Fr};
 use halo2curves::ff::Field;
 
-// fn vm_circuit<F: Field + From<u64> + Hash>() -> (Circuit<F>, Option<AssignmentGenerator<F, ()>>) {
-//     use chiquito::frontend::dsl::cb::*;
+fn vm_circuit<F: Field + From<u64> + Hash>(
+    memory_register_count: usize,
+    opcode_count: usize,
+) -> (Circuit<F>, Option<AssignmentGenerator<F, ()>>) {
+    use chiquito::frontend::dsl::cb::*;
 
-//     let vm = circuit::<F, (), _>("vm", |ctx| {});
-// }
+    let vm = circuit::<F, (), _>("vm", |ctx| {
+        let memory: Vec<Queriable<F>> = (0..memory_register_count)
+            .map(|i| ctx.forward(&format!("memory_register_{}", i)))
+            .collect();
+        let read1: Vec<Queriable<F>> = (0..memory_register_count)
+            .map(|i| ctx.forward(&format!("read1_register_{}", i)))
+            .collect();
+        let read2: Vec<Queriable<F>> = (0..memory_register_count)
+            .map(|i| ctx.forward(&format!("read2_register_{}", i)))
+            .collect();
+        let output: Vec<Queriable<F>> = (0..memory_register_count)
+            .map(|i| ctx.forward(&format!("output_{}", i)))
+            .collect();
+        let opcode: Vec<Queriable<F>> = (0..opcode_count)
+            .map(|i| ctx.forward(&format!("opcode_{}", i)))
+            .collect();
+        let free_input = ctx.forward("free_input");
+        let vm_step = ctx.step_type_def("vm step", |ctx| {
+            ctx.setup(move |ctx| {
+                // memory should stay the same unless being updated
+                memory.iter().enumerate().for_each(|(i, &reg)| {
+                    ctx.transition(eq((reg - reg.next()) * (Expr::from(1) - output[i]), 0));
+                });
+                // there is only one active selector for each selector range
+                let constraints = [&read1, &read2, &output, &opcode]
+                    .iter()
+                    .map(|selector_range| {
+                        selector_range
+                            .iter()
+                            .fold(Expr::from(0), |acc, &cur| acc + cur)
+                            - Expr::from(1)
+                    })
+                    .collect::<Vec<Expr<F>>>();
+
+                // Operation constraints
+                let _output: Expr<F> = output
+                    .iter()
+                    .zip(&memory)
+                    .map(|(&a, &b)| a * b.next())
+                    .fold(Expr::from(0), |acc, cur| acc + cur);
+                let _output_prev: Expr<F> = output
+                    .iter()
+                    .zip(&memory)
+                    .map(|(&a, &b)| a * b)
+                    .fold(Expr::from(0), |acc, cur| acc + cur);
+                let _read1: Expr<F> = read1
+                    .iter()
+                    .zip(&memory)
+                    .map(|(&a, &b)| a * b)
+                    .fold(Expr::from(0), |acc, cur| acc + cur);
+                let _read2: Expr<F> = read2
+                    .iter()
+                    .zip(&memory)
+                    .map(|(&a, &b)| a * b)
+                    .fold(Expr::from(0), |acc, cur| acc + cur);
+
+                let _set = (free_input - _output) * opcode[0];
+            });
+            ctx.wg(move |ctx, x: u32| {})
+        });
+    });
+    todo!()
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Operation {
@@ -44,23 +127,23 @@ pub fn main() {
             let op = match _op.as_ref() {
                 "set" => Operation {
                     argument_count: 2,
-                    opcode: 1,
+                    opcode: 0,
                 },
                 "mul" => Operation {
                     argument_count: 3,
-                    opcode: 2,
+                    opcode: 1,
                 },
                 "add" => Operation {
                     argument_count: 3,
-                    opcode: 3,
+                    opcode: 2,
                 },
                 "neg" => Operation {
                     argument_count: 2,
-                    opcode: 4,
+                    opcode: 3,
                 },
                 "eq" => Operation {
                     argument_count: 2,
-                    opcode: 5,
+                    opcode: 4,
                 },
                 "out" => Operation {
                     argument_count: 2,

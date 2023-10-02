@@ -110,7 +110,6 @@ dependencies = [
  "halo2curves",
  "num-bigint",
  "polyexen",
- "pyo3",
  "serde",
  "serde_json",
  "uuid",
