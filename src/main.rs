@@ -5,19 +5,11 @@ use std::hash::Hash;
 use chiquito::ast::query::Queriable;
 use chiquito::ast::Expr;
 use chiquito::{
-    ast::ToField,           // compiled circuit type
-    frontend::dsl::circuit, // main function for constructing an AST circuit
-    plonkish::backend::halo2::{chiquito2Halo2, ChiquitoHalo2Circuit}, /* compiles to
-                             * Chiquito Halo2
-                             * backend,
-                             * which can be
-                             * integrated into
-                             * Halo2
-                             * circuit */
+    ast::ToField,
+    frontend::dsl::circuit,
+    plonkish::backend::halo2::{chiquito2Halo2, ChiquitoHalo2Circuit},
     plonkish::compiler::{
-        cell_manager::SingleRowCellManager, // input for constructing the compiler
-        compile,                            // input for constructing the compiler
-        config,
+        cell_manager::SingleRowCellManager, compile, config,
         step_selector::SimpleStepSelectorBuilder,
     },
     plonkish::ir::{assignments::AssignmentGenerator, Circuit},
@@ -49,13 +41,13 @@ fn vm_circuit<F: Field + From<u64> + Hash>(
             .collect();
         let free_input = ctx.forward("free_input");
         let vm_step = ctx.step_type_def("vm step", |ctx| {
-            ctx.setup(move |ctx| {
+            ctx.setup(|ctx| {
                 // memory should stay the same unless being updated
                 memory.iter().enumerate().for_each(|(i, &reg)| {
                     ctx.transition(eq((reg - reg.next()) * (Expr::from(1) - output[i]), 0));
                 });
                 // there is only one active selector for each selector range
-                let constraints = [&read1, &read2, &output, &opcode]
+                let mut constraints = [&read1, &read2, &output, &opcode]
                     .iter()
                     .map(|selector_range| {
                         selector_range
@@ -87,18 +79,133 @@ fn vm_circuit<F: Field + From<u64> + Hash>(
                     .map(|(&a, &b)| a * b)
                     .fold(Expr::from(0), |acc, cur| acc + cur);
 
-                let _set = (free_input - _output) * opcode[0];
+                let _set = (free_input - _output.clone()) * opcode[Opcode::get(Opcode::Set)];
+                constraints.push(_set);
+
+                let _add = (_read1.clone() + _read2.clone() - _output.clone())
+                    * opcode[Opcode::get(Opcode::Add)];
+                constraints.push(_add);
+
+                let _neg = (_read1.clone() + _output.clone()) * opcode[Opcode::get(Opcode::Neg)];
+                constraints.push(_neg);
+
+                let _mul = (_read1.clone() * _read2.clone() - _output.clone())
+                    * opcode[Opcode::get(Opcode::Mul)];
+                constraints.push(_mul);
+
+                let _eq = (_read1 - _read2) * opcode[Opcode::get(Opcode::Eq)];
+                constraints.push(_eq);
+
+                let _eq2 = (_output - _output_prev) * opcode[Opcode::get(Opcode::Eq)];
+                constraints.push(_eq2);
+
+                ctx.transition(eq(
+                    constraints
+                        .iter()
+                        .fold(Expr::from(0), |acc, cur| acc + cur.clone()),
+                    0,
+                ));
             });
-            ctx.wg(move |ctx, x: u32| {})
+            ctx.wg(move |ctx, (op, args): (Opcode, Vec<usize>)| {
+                let mut _memory = vec![F::ZERO; memory_register_count];
+                let mut _read1 = vec![F::ZERO; memory_register_count];
+                let mut _read2 = vec![F::ZERO; memory_register_count];
+                let mut _output = vec![F::ZERO; memory_register_count];
+                let mut _opcode = vec![F::ZERO; opcode_count];
+                let mut _free_input = F::ZERO;
+                match op {
+                    Opcode::Set => {
+                        _read1[0] = F::ONE;
+                        _read2[0] = F::ONE;
+                        _output[args[0]] = F::ONE;
+                        _memory[args[0]] = F::from(args[1] as u64);
+                        _free_input = F::from(args[1] as u64);
+                    }
+                    Opcode::Mul => {
+                        _read1[args[1]] = F::ONE;
+                        _read2[args[2]] = F::ONE;
+                        _output[args[0]] = F::ONE;
+                        _memory[args[0]] = _memory[args[1]] * _memory[args[2]]
+                    }
+                    Opcode::Add => {
+                        _read1[args[1]] = F::ONE;
+                        _read2[args[2]] = F::ONE;
+                        _output[args[0]] = F::ONE;
+                        _memory[args[0]] = _memory[args[1]] + _memory[args[2]]
+                    }
+                    Opcode::Neg => {
+                        _read1[args[1]] = F::ONE;
+                        _read2[0] = F::ONE;
+                        _output[args[0]] = F::ONE;
+                        _memory[args[0]] = -F::ONE * _memory[args[1]]
+                    }
+                    Opcode::Eq => {
+                        _read1[args[0]] = F::ONE;
+                        _read2[args[1]] = F::ONE;
+                        _output[0] = F::ONE;
+                    }
+                    Opcode::Out => (),
+                };
+
+                memory
+                    .iter()
+                    .zip(_memory)
+                    .for_each(|(&a, b)| ctx.assign(a, b));
+
+                read1
+                    .iter()
+                    .zip(_read1)
+                    .for_each(|(&a, b)| ctx.assign(a, b));
+
+                read2
+                    .iter()
+                    .zip(_read2)
+                    .for_each(|(&a, b)| ctx.assign(a, b));
+
+                output
+                    .iter()
+                    .zip(_output)
+                    .for_each(|(&a, b)| ctx.assign(a, b));
+
+                opcode
+                    .iter()
+                    .zip(_opcode)
+                    .for_each(|(&a, b)| ctx.assign(a, b));
+
+                ctx.assign(free_input, _free_input)
+            })
         });
     });
     todo!()
 }
 
+#[derive(Debug, Copy, Clone)]
+enum Opcode {
+    Set,
+    Mul,
+    Add,
+    Neg,
+    Eq,
+    Out,
+}
+
+impl Opcode {
+    pub fn get(self) -> usize {
+        match self {
+            Opcode::Set => 0,
+            Opcode::Mul => 1,
+            Opcode::Add => 2,
+            Opcode::Neg => 3,
+            Opcode::Eq => 4,
+            Opcode::Out => 0x999999,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Operation {
     argument_count: usize,
-    opcode: i32,
+    opcode: Opcode,
 }
 
 fn parse_hex(s: &str) -> usize {
@@ -122,32 +229,32 @@ pub fn main() {
                 .map(|s| s.to_string())
                 .collect::<Vec<String>>();
             let argument_count = _op.len() - 1;
-            let args: Vec<String> = _op[1..].to_vec();
+            let args: Vec<usize> = _op[1..].iter().map(|x| parse_hex(x)).collect();
             let _op = _op[0].to_owned();
             let op = match _op.as_ref() {
                 "set" => Operation {
                     argument_count: 2,
-                    opcode: 0,
+                    opcode: Opcode::Set,
                 },
                 "mul" => Operation {
                     argument_count: 3,
-                    opcode: 1,
+                    opcode: Opcode::Mul,
                 },
                 "add" => Operation {
                     argument_count: 3,
-                    opcode: 2,
+                    opcode: Opcode::Add,
                 },
                 "neg" => Operation {
                     argument_count: 2,
-                    opcode: 3,
+                    opcode: Opcode::Neg,
                 },
                 "eq" => Operation {
                     argument_count: 2,
-                    opcode: 4,
+                    opcode: Opcode::Eq,
                 },
                 "out" => Operation {
                     argument_count: 2,
-                    opcode: 0x999999,
+                    opcode: Opcode::Out,
                 },
                 _ => panic!("Invalid opcode"),
             };
@@ -158,12 +265,10 @@ pub fn main() {
             );
 
             memory_register_count = match _op.as_ref() {
-                "set" | "out" => cmp::max(memory_register_count, parse_hex(&args[0])),
+                "set" | "out" => cmp::max(memory_register_count, args[0]),
                 _ => cmp::max(
                     memory_register_count,
-                    args.iter()
-                        .map(|x| parse_hex(&x))
-                        .fold(0, |high, x| cmp::max(high, x)),
+                    args.iter().fold(0, |high, &x| cmp::max(high, x)),
                 ),
             };
             op
