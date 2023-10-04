@@ -22,7 +22,7 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
     memory_register_count: usize,
     opcode_count: usize,
     ops_count: usize,
-) {
+) -> (Circuit<F>, Option<AssignmentGenerator<F, VMInput<F>>>) {
     use chiquito::frontend::dsl::cb::*;
 
     let vm = circuit::<F, VMInput<F>, _>("vm", |ctx| {
@@ -44,12 +44,12 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
         let free_input = ctx.forward("free_input");
 
         let vm_step = ctx.step_type_def("vm step", |ctx| {
-            let memory = memory.clone();
-            let read1 = read1.clone();
-            let read2 = read2.clone();
-            let output = output.clone();
-            let opcode = opcode.clone();
-            let free_input = free_input.clone();
+            // let memory = memory.clone();
+            // let read1 = read1.clone();
+            // let read2 = read2.clone();
+            // let output = output.clone();
+            // let opcode = opcode.clone();
+            // let free_input = free_input.clone();
 
             ctx.setup(|ctx| {
                 // memory should stay the same unless being updated
@@ -116,58 +116,18 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                     0,
                 ));
             });
-            // ctx.wg(move |ctx, (op, args): (Opcode, Vec<usize>)| {
+
             ctx.wg(move |ctx, round_values: RoundInput<F>| {
-                let mut _memory = vec![F::ZERO; memory_register_count];
-                let mut _read1 = vec![F::ZERO; memory_register_count];
-                let mut _read2 = vec![F::ZERO; memory_register_count];
-                let mut _output = vec![F::ZERO; memory_register_count];
-                let mut _opcode = vec![F::ZERO; opcode_count];
-                let mut _free_input = F::ZERO;
-                let RoundInput { op, args } = round_values;
+                let RoundInput {
+                    _memory,
+                    _output,
+                    _read1,
+                    _read2,
+                    _opcode,
+                    _free_input,
+                } = round_values;
 
-                // possible opcodes as field elements
-                let SET: F = Opcode::Set.as_field();
-                let MUL: F = Opcode::Mul.as_field();
-                let ADD: F = Opcode::Add.as_field();
-                let NEG: F = Opcode::Neg.as_field();
-                let EQ: F = Opcode::Eq.as_field();
-                let OUT: F = Opcode::Out.as_field();
-
-                let opcodes = match op {
-                    SET => {
-                        _read1[0] = F::ONE;
-                        _read2[0] = F::ONE;
-                        _output[args[0]] = F::ONE;
-                        _memory[args[0]] = F::from(args[1] as u64);
-                        _free_input = F::from(args[1] as u64);
-                    }
-                    MUL => {
-                        _read1[args[1]] = F::ONE;
-                        _read2[args[2]] = F::ONE;
-                        _output[args[0]] = F::ONE;
-                        _memory[args[0]] = _memory[args[1]] * _memory[args[2]]
-                    }
-                    ADD => {
-                        _read1[args[1]] = F::ONE;
-                        _read2[args[2]] = F::ONE;
-                        _output[args[0]] = F::ONE;
-                        _memory[args[0]] = _memory[args[1]] + _memory[args[2]]
-                    }
-                    NEG => {
-                        _read1[args[1]] = F::ONE;
-                        _read2[0] = F::ONE;
-                        _output[args[0]] = F::ONE;
-                        _memory[args[0]] = -F::ONE * _memory[args[1]]
-                    }
-                    EQ => {
-                        _read1[args[0]] = F::ONE;
-                        _read2[args[1]] = F::ONE;
-                        _output[0] = F::ONE;
-                    }
-                    OUT => (),
-                    _ => (),
-                };
+                println!("memory_register_count: {:?}", memory_register_count);
 
                 memory
                     .iter()
@@ -188,6 +148,13 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                     .iter()
                     .zip(_output)
                     .for_each(|(&a, b)| ctx.assign(a, b));
+
+                opcode
+                    .iter()
+                    .zip(_opcode)
+                    .for_each(|(&a, b)| ctx.assign(a, b));
+
+                ctx.assign(free_input, _free_input)
             })
         });
 
@@ -199,15 +166,77 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                 argument_counts,
                 arguments,
             } = ops;
+            let mut _memory = vec![F::ZERO; memory_register_count];
+
+            // possible opcodes as field elements
+            let SET: F = Opcode::Set.as_field();
+            let MUL: F = Opcode::Mul.as_field();
+            let ADD: F = Opcode::Add.as_field();
+            let NEG: F = Opcode::Neg.as_field();
+            let EQ: F = Opcode::Eq.as_field();
+            let OUT: F = Opcode::Out.as_field();
 
             let mut start = 0;
-            for (len, op) in argument_counts.iter().zip(opcodes) {
+            argument_counts.iter().zip(opcodes).for_each(|(len, op)| {
+                let mut _read1 = vec![F::ZERO; memory_register_count];
+                let mut _read2 = vec![F::ZERO; memory_register_count];
+                let mut _output = vec![F::ZERO; memory_register_count];
+                let mut _opcode = vec![F::ZERO; opcode_count];
+                let mut _free_input = F::ZERO;
                 let args = arguments[start..start + len].to_vec();
-                ctx.add(&vm_step, RoundInput { op, args });
+                if op == SET {
+                    _read1[0] = F::ONE;
+                    _read2[0] = F::ONE;
+                    _output[args[0]] = F::ONE;
+                    _memory[args[0]] = F::from(args[1] as u64);
+                    _free_input = F::from(args[1] as u64);
+                } else if op == MUL {
+                    _read1[args[1]] = F::ONE;
+                    _read2[args[2]] = F::ONE;
+                    _output[args[0]] = F::ONE;
+                    _memory[args[0]] = _memory[args[1]] * _memory[args[2]];
+                } else if op == ADD {
+                    _read1[args[1]] = F::ONE;
+                    _read2[args[2]] = F::ONE;
+                    _output[args[0]] = F::ONE;
+                    _memory[args[0]] = _memory[args[1]] + _memory[args[2]];
+                } else if op == NEG {
+                    _read1[args[1]] = F::ONE;
+                    _read2[0] = F::ONE;
+                    _output[args[0]] = F::ONE;
+                    _memory[args[0]] = -F::ONE * _memory[args[1]];
+                } else if op == EQ {
+                    _read1[args[0]] = F::ONE;
+                    _read2[args[1]] = F::ONE;
+                    _output[0] = F::ONE;
+                }
+
+                println!("memory -- {:?}", _memory);
+                println!("read1 -- {:?}", _read1);
+                println!("read2 -- {:?}", _read2);
+                println!("output -- {:?}", _output);
+                println!("opcode -- {:?}", _opcode);
+                println!("free input -- {:?}", _free_input);
+
+                ctx.add(
+                    &vm_step,
+                    RoundInput {
+                        _memory: _memory.clone(),
+                        _output: _output.clone(),
+                        _read1: _read1.clone(),
+                        _read2: _read2.clone(),
+                        _opcode: _opcode.clone(),
+                        _free_input: _free_input.clone(),
+                    },
+                );
                 start += len;
-            }
+            })
         })
     });
+    compile(
+        config(SingleRowCellManager {}, SimpleStepSelectorBuilder {}),
+        &vm,
+    )
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -221,6 +250,7 @@ enum Opcode {
 }
 
 impl Opcode {
+    pub const COUNT: usize = 6;
     pub fn get(self) -> usize {
         match self {
             Opcode::Set => 0,
@@ -236,16 +266,21 @@ impl Opcode {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Operation {
     argument_count: usize,
+    args: Vec<usize>,
     opcode: Opcode,
 }
 
 #[derive(Debug, Clone)]
 struct RoundInput<F: PrimeField> {
-    op: F,
-    args: Vec<usize>,
+    _memory: Vec<F>,
+    _output: Vec<F>,
+    _read1: Vec<F>,
+    _read2: Vec<F>,
+    _opcode: Vec<F>,
+    _free_input: F,
 }
 
 #[derive(Debug, Clone)]
@@ -255,8 +290,11 @@ struct VMInput<F: PrimeField> {
     arguments: Vec<usize>,
 }
 
-fn parse_hex(s: &str) -> usize {
-    usize::from_str_radix(s.strip_prefix("0x").unwrap(), 16).unwrap()
+fn parse_number(s: &str) -> usize {
+    if s.contains("0x") {
+        return usize::from_str_radix(s.strip_prefix("0x").unwrap(), 16).unwrap();
+    }
+    usize::from_str_radix(s, 10).unwrap()
 }
 
 pub fn main() {
@@ -276,32 +314,46 @@ pub fn main() {
                 .map(|s| s.to_string())
                 .collect::<Vec<String>>();
             let argument_count = _op.len() - 1;
-            let args: Vec<usize> = _op[1..].iter().map(|x| parse_hex(x)).collect();
+            let args: Vec<usize> = _op[1..].iter().map(|x| parse_number(x)).collect();
             let _op = _op[0].to_owned();
+
+            memory_register_count = match _op.as_ref() {
+                "set" | "out" => cmp::max(memory_register_count, args[0]),
+                _ => cmp::max(
+                    memory_register_count,
+                    args.iter().fold(0, |high, &x| cmp::max(high, x)),
+                ),
+            };
             let op = match _op.as_ref() {
                 "set" => Operation {
                     argument_count: 2,
                     opcode: Opcode::Set,
+                    args,
                 },
                 "mul" => Operation {
                     argument_count: 3,
                     opcode: Opcode::Mul,
+                    args,
                 },
                 "add" => Operation {
                     argument_count: 3,
                     opcode: Opcode::Add,
+                    args,
                 },
                 "neg" => Operation {
                     argument_count: 2,
                     opcode: Opcode::Neg,
+                    args,
                 },
                 "eq" => Operation {
                     argument_count: 2,
                     opcode: Opcode::Eq,
+                    args,
                 },
                 "out" => Operation {
                     argument_count: 2,
                     opcode: Opcode::Out,
+                    args,
                 },
                 _ => panic!("Invalid opcode"),
             };
@@ -311,29 +363,59 @@ pub fn main() {
                 op.argument_count, argument_count, _op
             );
 
-            memory_register_count = match _op.as_ref() {
-                "set" | "out" => cmp::max(memory_register_count, args[0]),
-                _ => cmp::max(
-                    memory_register_count,
-                    args.iter().fold(0, |high, &x| cmp::max(high, x)),
-                ),
-            };
             op
         })
         .collect::<Vec<Operation>>();
+    memory_register_count += 1;
     println!("memory register count: {}", memory_register_count);
-    println!("{:?}", contents);
+    println!("contents -- {:?}", contents);
+
+    // compile to VM input
+    let opcodes: Vec<Fr> = contents.iter().map(|call| call.opcode.as_field()).collect();
+    let argument_counts: Vec<usize> = contents.iter().map(|call| call.argument_count).collect();
+    let arguments: Vec<usize> = contents
+        .iter()
+        .flat_map(|call| call.args.to_owned())
+        .collect();
+
+    let ops_count = contents.len();
+    let opcode_count = Opcode::COUNT;
+
+    let (chiquito, wit_gen) = vm_circuit(memory_register_count, opcode_count, ops_count);
+    let compiled = chiquito2Halo2(chiquito);
+    let circuit = ChiquitoHalo2Circuit::new(
+        compiled,
+        wit_gen.map(|x| {
+            x.generate(VMInput {
+                opcodes,
+                argument_counts,
+                arguments,
+            })
+        }),
+    );
+
+    let prover = MockProver::<Fr>::run(7, &circuit, circuit.instance()).unwrap();
+
+    let result = prover.verify_par();
+
+    println!("{:#?}", result);
+
+    if let Err(failures) = &result {
+        for failure in failures.iter() {
+            println!("{}", failure);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::parse_hex;
+    use crate::parse_number;
 
     #[test]
     fn check_hex_parsing() {
         (0..10).into_iter().for_each(|x| {
             let hex = format!("0x{}", x);
-            assert_eq!(parse_hex(&hex), x);
+            assert_eq!(parse_number(&hex), x);
         })
     }
 
