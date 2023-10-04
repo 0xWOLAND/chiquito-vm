@@ -183,25 +183,35 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                     _output[args[0]] = F::ONE;
                     _memory[args[0]] = F::from(args[1] as u64);
                     _free_input = F::from(args[1] as u64);
+                    // set opcode register
+                    _opcode[Opcode::Set.get()] = F::ONE;
                 } else if op == MUL {
                     _read1[args[1]] = F::ONE;
                     _read2[args[2]] = F::ONE;
                     _output[args[0]] = F::ONE;
                     _memory[args[0]] = _memory[args[1]] * _memory[args[2]];
+                    // set opcode register
+                    _opcode[Opcode::Mul.get()] = F::ONE;
                 } else if op == ADD {
                     _read1[args[1]] = F::ONE;
                     _read2[args[2]] = F::ONE;
                     _output[args[0]] = F::ONE;
                     _memory[args[0]] = _memory[args[1]] + _memory[args[2]];
+                    // set opcode register
+                    _opcode[Opcode::Add.get()] = F::ONE;
                 } else if op == NEG {
                     _read1[args[1]] = F::ONE;
                     _read2[0] = F::ONE;
                     _output[args[0]] = F::ONE;
                     _memory[args[0]] = -F::ONE * _memory[args[1]];
+                    // set opcode register
+                    _opcode[Opcode::Neg.get()] = F::ONE;
                 } else if op == EQ {
                     _read1[args[0]] = F::ONE;
                     _read2[args[1]] = F::ONE;
                     _output[0] = F::ONE;
+                    // set opcode register
+                    _opcode[Opcode::Eq.get()] = F::ONE;
                 }
 
                 println!("memory -- {:?}", _memory);
