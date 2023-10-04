@@ -44,13 +44,6 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
         let free_input = ctx.forward("free_input");
 
         let vm_step = ctx.step_type_def("vm step", |ctx| {
-            // let memory = memory.clone();
-            // let read1 = read1.clone();
-            // let read2 = read2.clone();
-            // let output = output.clone();
-            // let opcode = opcode.clone();
-            // let free_input = free_input.clone();
-
             ctx.setup(|ctx| {
                 // memory should stay the same unless being updated
                 memory.iter().enumerate().for_each(|(i, &reg)| {
@@ -230,7 +223,31 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                     },
                 );
                 start += len;
-            })
+            });
+            let clear_register = vec![F::ZERO; memory_register_count - 1]
+                .iter()
+                .chain(&[F::ONE])
+                .map(|&x| x)
+                .collect::<Vec<F>>();
+            let _opcode = vec![F::ZERO; opcode_count - 1]
+                .iter()
+                .chain(&[F::ONE])
+                .map(|&x| x)
+                .collect::<Vec<F>>();
+
+            println!("clear register -- {:?}", clear_register);
+            println!("clear opcodes -- {:?}", _opcode);
+            ctx.add(
+                &vm_step,
+                RoundInput {
+                    _memory,
+                    _output: clear_register.clone(),
+                    _read1: clear_register.clone(),
+                    _read2: clear_register.clone(),
+                    _opcode,
+                    _free_input: F::ZERO,
+                },
+            );
         })
     });
     compile(
@@ -378,7 +395,7 @@ pub fn main() {
         .flat_map(|call| call.args.to_owned())
         .collect();
 
-    let ops_count = contents.len();
+    let ops_count = contents.len() + 1;
     let opcode_count = Opcode::COUNT;
 
     let (chiquito, wit_gen) = vm_circuit(memory_register_count, opcode_count, ops_count);
