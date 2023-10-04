@@ -47,7 +47,10 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
             ctx.setup(|ctx| {
                 // memory should stay the same unless being updated
                 memory.iter().enumerate().for_each(|(i, &reg)| {
-                    ctx.transition(eq((reg - reg.next()) * (Expr::from(1) - output[i]), 0));
+                    ctx.transition(eq(
+                        (reg - reg.next()) * (Expr::from(1) - output[i].next()),
+                        0,
+                    ));
                 });
                 // there is only one active selector for each selector range
                 let mut constraints = [&read1, &read2, &output, &opcode]
