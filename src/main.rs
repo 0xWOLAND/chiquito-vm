@@ -4,6 +4,7 @@ use std::hash::Hash;
 
 use chiquito::ast::query::Queriable;
 use chiquito::ast::Expr;
+use chiquito::frontend::dsl::CircuitContext;
 use chiquito::{
     ast::ToField,
     frontend::dsl::circuit,
@@ -15,15 +16,16 @@ use chiquito::{
     plonkish::ir::{assignments::AssignmentGenerator, Circuit},
 };
 use halo2_proofs::{dev::MockProver, halo2curves::bn256::Fr};
-use halo2curves::ff::Field;
+use halo2curves::ff::{Field, PrimeField};
 
-fn vm_circuit<F: Field + From<u64> + Hash>(
+fn vm_circuit<F: PrimeField + Eq + Hash>(
     memory_register_count: usize,
     opcode_count: usize,
-) -> (Circuit<F>, Option<AssignmentGenerator<F, ()>>) {
+    ops_count: usize,
+) {
     use chiquito::frontend::dsl::cb::*;
 
-    let vm = circuit::<F, (), _>("vm", |ctx| {
+    let vm = circuit::<F, VMInput<F>, _>("vm", |ctx| {
         let memory: Vec<Queriable<F>> = (0..memory_register_count)
             .map(|i| ctx.forward(&format!("memory_register_{}", i)))
             .collect();
@@ -40,7 +42,15 @@ fn vm_circuit<F: Field + From<u64> + Hash>(
             .map(|i| ctx.forward(&format!("opcode_{}", i)))
             .collect();
         let free_input = ctx.forward("free_input");
+
         let vm_step = ctx.step_type_def("vm step", |ctx| {
+            let memory = memory.clone();
+            let read1 = read1.clone();
+            let read2 = read2.clone();
+            let output = output.clone();
+            let opcode = opcode.clone();
+            let free_input = free_input.clone();
+
             ctx.setup(|ctx| {
                 // memory should stay the same unless being updated
                 memory.iter().enumerate().for_each(|(i, &reg)| {
@@ -106,45 +116,57 @@ fn vm_circuit<F: Field + From<u64> + Hash>(
                     0,
                 ));
             });
-            ctx.wg(move |ctx, (op, args): (Opcode, Vec<usize>)| {
+            // ctx.wg(move |ctx, (op, args): (Opcode, Vec<usize>)| {
+            ctx.wg(move |ctx, round_values: RoundInput<F>| {
                 let mut _memory = vec![F::ZERO; memory_register_count];
                 let mut _read1 = vec![F::ZERO; memory_register_count];
                 let mut _read2 = vec![F::ZERO; memory_register_count];
                 let mut _output = vec![F::ZERO; memory_register_count];
                 let mut _opcode = vec![F::ZERO; opcode_count];
                 let mut _free_input = F::ZERO;
-                match op {
-                    Opcode::Set => {
+                let RoundInput { op, args } = round_values;
+
+                // possible opcodes as field elements
+                let SET: F = Opcode::Set.as_field();
+                let MUL: F = Opcode::Mul.as_field();
+                let ADD: F = Opcode::Add.as_field();
+                let NEG: F = Opcode::Neg.as_field();
+                let EQ: F = Opcode::Eq.as_field();
+                let OUT: F = Opcode::Out.as_field();
+
+                let opcodes = match op {
+                    SET => {
                         _read1[0] = F::ONE;
                         _read2[0] = F::ONE;
                         _output[args[0]] = F::ONE;
                         _memory[args[0]] = F::from(args[1] as u64);
                         _free_input = F::from(args[1] as u64);
                     }
-                    Opcode::Mul => {
+                    MUL => {
                         _read1[args[1]] = F::ONE;
                         _read2[args[2]] = F::ONE;
                         _output[args[0]] = F::ONE;
                         _memory[args[0]] = _memory[args[1]] * _memory[args[2]]
                     }
-                    Opcode::Add => {
+                    ADD => {
                         _read1[args[1]] = F::ONE;
                         _read2[args[2]] = F::ONE;
                         _output[args[0]] = F::ONE;
                         _memory[args[0]] = _memory[args[1]] + _memory[args[2]]
                     }
-                    Opcode::Neg => {
+                    NEG => {
                         _read1[args[1]] = F::ONE;
                         _read2[0] = F::ONE;
                         _output[args[0]] = F::ONE;
                         _memory[args[0]] = -F::ONE * _memory[args[1]]
                     }
-                    Opcode::Eq => {
+                    EQ => {
                         _read1[args[0]] = F::ONE;
                         _read2[args[1]] = F::ONE;
                         _output[0] = F::ONE;
                     }
-                    Opcode::Out => (),
+                    OUT => (),
+                    _ => (),
                 };
 
                 memory
@@ -166,17 +188,26 @@ fn vm_circuit<F: Field + From<u64> + Hash>(
                     .iter()
                     .zip(_output)
                     .for_each(|(&a, b)| ctx.assign(a, b));
-
-                opcode
-                    .iter()
-                    .zip(_opcode)
-                    .for_each(|(&a, b)| ctx.assign(a, b));
-
-                ctx.assign(free_input, _free_input)
             })
         });
+
+        ctx.pragma_num_steps(ops_count);
+
+        ctx.trace(move |ctx, ops| {
+            let VMInput {
+                opcodes,
+                argument_counts,
+                arguments,
+            } = ops;
+
+            let mut start = 0;
+            for (len, op) in argument_counts.iter().zip(opcodes) {
+                let args = arguments[start..start + len].to_vec();
+                ctx.add(&vm_step, RoundInput { op, args });
+                start += len;
+            }
+        })
     });
-    todo!()
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -200,12 +231,28 @@ impl Opcode {
             Opcode::Out => 0x999999,
         }
     }
+    pub fn as_field<F: PrimeField>(self) -> F {
+        F::from(self.get() as u64)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 struct Operation {
     argument_count: usize,
     opcode: Opcode,
+}
+
+#[derive(Debug, Clone)]
+struct RoundInput<F: PrimeField> {
+    op: F,
+    args: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct VMInput<F: PrimeField> {
+    opcodes: Vec<F>,
+    argument_counts: Vec<usize>,
+    arguments: Vec<usize>,
 }
 
 fn parse_hex(s: &str) -> usize {
@@ -288,5 +335,23 @@ mod tests {
             let hex = format!("0x{}", x);
             assert_eq!(parse_hex(&hex), x);
         })
+    }
+
+    #[test]
+    fn check() {
+        let lengths = vec![3, 5, 6, 7, 3, 6];
+        let tot: usize = lengths.iter().sum();
+        let arr: Vec<u64> = vec![10; tot]
+            .iter()
+            .enumerate()
+            .map(|(i, &x)| i as u64)
+            .collect();
+
+        let mut cur = 0;
+        for len in lengths {
+            let x = arr[cur..cur + len].to_vec();
+            cur += len;
+            println!("{:?}", x);
+        }
     }
 }
