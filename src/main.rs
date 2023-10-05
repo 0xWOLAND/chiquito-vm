@@ -100,8 +100,11 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                 let _eq = (_read1 - _read2) * opcode[Opcode::get(Opcode::Eq)];
                 constraints.push(_eq);
 
-                let _eq2 = (_output - _output_prev) * opcode[Opcode::get(Opcode::Eq)];
+                let _eq2 = (_output.clone() - _output_prev) * opcode[Opcode::get(Opcode::Eq)];
                 constraints.push(_eq2);
+
+                let _out = (_output - free_input) * opcode[Opcode::get(Opcode::Out)];
+                constraints.push(_out);
 
                 ctx.transition(eq(
                     constraints
@@ -214,6 +217,12 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                     _output[0] = F::ONE;
                     // set opcode register
                     _opcode[Opcode::Eq.get()] = F::ONE;
+                } else if op == OUT {
+                    _read1[args[0]] = F::ONE;
+                    _read2[args[0]] = F::ONE;
+                    _free_input = F::from(args[1] as u64);
+                    _output[args[0]] = F::ONE;
+                    _opcode[Opcode::Out.get()] = F::ONE;
                 }
 
                 println!("memory -- {:?}", _memory);
@@ -289,7 +298,7 @@ impl Opcode {
             Opcode::Add => 2,
             Opcode::Neg => 3,
             Opcode::Eq => 4,
-            Opcode::Out => 0x999999,
+            Opcode::Out => 5,
         }
     }
     pub fn as_field<F: PrimeField>(self) -> F {
