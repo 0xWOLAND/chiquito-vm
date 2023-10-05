@@ -1,8 +1,7 @@
-`chiquito-vm` is a zkVM, a zero-knowledge virtual machine implemented using Chiquito, a Halo 2 DSL. zkVM enables secure, private computation with cryptographic guarantees. Chiquito offers a high-level interface for zkVM programs.
-
+`chiquito-vm` is a zkVM, a zero-knowledge virtual machine implemented using Chiquito, a Halo 2 DSL. zkVM enables secure, private computation with cryptographic guarantees.
 ## Instructions
 
-zkVM in Chiquito supports the following instructions:
+The following instructions are supported:
 
 - `set`: Set a variable to a constant.
 - `mul`: Multiply values and store the result.
@@ -14,7 +13,7 @@ zkVM in Chiquito supports the following instructions:
 
 ## Usage
 
-Write Chiquito programs using these instructions to define variables, perform computations, and generate proofs of correctness. For example:
+Write assembly programs using these instructions to define variables, perform computations, and generate proofs of correctness. For example:
 
 ```asm
 set 0x0 10
@@ -30,4 +29,4 @@ cargo run -- fib # fibonacci sequence
 cargo run -- squares # repeated squaring sequence
 ```
 
-By default, `fib.asm` is used.
+By default, `fib.asm` is used. To run custom assembly files, write to `/asm/yourefile.asm` and run `cargo run -- yourfile`.
