@@ -1,5 +1,3 @@
-# zkVM with Chiquito DSL README
-
 `chiquito-vm` is a zkVM, a zero-knowledge virtual machine implemented using Chiquito, a Halo 2 DSL. zkVM enables secure, private computation with cryptographic guarantees. Chiquito offers a high-level interface for zkVM programs.
 
 ## Instructions
