@@ -97,6 +97,9 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                     * opcode[Opcode::get(Opcode::Mul)];
                 constraints.push(_mul);
 
+                let _mov = (_read2.clone() - _output.clone()) * opcode[Opcode::get(Opcode::Mov)];
+                constraints.push(_mov);
+
                 let _eq = (_read1 - _read2) * opcode[Opcode::get(Opcode::Eq)];
                 constraints.push(_eq);
 
@@ -170,6 +173,7 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
             let MUL: F = Opcode::Mul.as_field();
             let ADD: F = Opcode::Add.as_field();
             let NEG: F = Opcode::Neg.as_field();
+            let MOV: F = Opcode::Mov.as_field();
             let EQ: F = Opcode::Eq.as_field();
             let OUT: F = Opcode::Out.as_field();
 
@@ -211,6 +215,13 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                     _current_memory[args[0]] = -F::ONE * _memory[args[1]];
                     // set opcode register
                     _opcode[Opcode::Neg.get()] = F::ONE;
+                } else if op == MOV {
+                    _read1[0] = F::ONE;
+                    _read2[args[1]] = F::ONE;
+                    _output[args[0]] = F::ONE;
+                    _current_memory[args[0]] = _current_memory[args[1]];
+                    // set opcode register
+                    _opcode[Opcode::Mov.get()] = F::ONE;
                 } else if op == EQ {
                     _read1[args[0]] = F::ONE;
                     _read2[args[1]] = F::ONE;
@@ -285,20 +296,22 @@ enum Opcode {
     Mul,
     Add,
     Neg,
+    Mov,
     Eq,
     Out,
 }
 
 impl Opcode {
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 7;
     pub fn get(self) -> usize {
         match self {
             Opcode::Set => 0,
             Opcode::Mul => 1,
             Opcode::Add => 2,
             Opcode::Neg => 3,
-            Opcode::Eq => 4,
-            Opcode::Out => 5,
+            Opcode::Mov => 4,
+            Opcode::Eq => 5,
+            Opcode::Out => 6,
         }
     }
     pub fn as_field<F: PrimeField>(self) -> F {
@@ -383,6 +396,11 @@ pub fn main() {
                 "neg" => Operation {
                     argument_count: 2,
                     opcode: Opcode::Neg,
+                    args,
+                },
+                "mov" => Operation {
+                    argument_count: 2,
+                    opcode: Opcode::Mov,
                     args,
                 },
                 "eq" => Operation {
