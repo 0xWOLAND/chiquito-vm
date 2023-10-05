@@ -30,4 +30,4 @@ cargo run -- fib # fibonacci sequence
 cargo run -- square # repeated squaring sequence
 ```
 
-zkVM ensures secure computation without revealing values.
+By default, `fib.asm` is used.

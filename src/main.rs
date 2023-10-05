@@ -127,7 +127,7 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                     _free_input,
                 } = round_values;
 
-                println!("memory_register_count: {:?}", memory_register_count);
+                // println!("memory_register_count: {:?}", memory_register_count);
 
                 memory
                     .iter()
@@ -269,8 +269,8 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                 .collect::<Vec<F>>();
 
             println!("memory -- {:?}", _memory);
-            println!("clear register -- {:?}", clear_register);
-            println!("clear opcodes -- {:?}", _opcode);
+            // println!("clear register -- {:?}", clear_register);
+            // println!("clear opcodes -- {:?}", _opcode);
             ctx.add(
                 &vm_step,
                 RoundInput {
@@ -353,10 +353,11 @@ fn parse_number(s: &str) -> usize {
 fn parse_args() -> String {
     let args: Vec<String> = env::args().collect();
     let asm = match args.len() {
-        1 => &args[0],
+        2 => &args[1],
         _ => "fib",
     };
     let asm = format!("asm/{}.asm", asm);
+    println!("reading from {asm}...");
     fs::read_to_string(asm).unwrap()
 }
 
@@ -435,8 +436,6 @@ pub fn main() {
         })
         .collect::<Vec<Operation>>();
     memory_register_count += 1;
-    println!("memory register count: {}", memory_register_count);
-    println!("contents -- {:?}", contents);
 
     // compile to VM input
     let opcodes: Vec<Fr> = contents.iter().map(|call| call.opcode.as_field()).collect();
@@ -466,11 +465,14 @@ pub fn main() {
 
     let result = prover.verify_par();
 
-    println!("{:#?}", result);
-
-    if let Err(failures) = &result {
-        for failure in failures.iter() {
-            println!("{}", failure);
+    match result {
+        Ok(_) => {
+            println!("Valid computation trace!")
+        }
+        Err(failures) => {
+            for failure in failures.iter() {
+                println!("{}", failure);
+            }
         }
     }
 }
