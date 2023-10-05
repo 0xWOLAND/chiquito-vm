@@ -353,7 +353,7 @@ fn parse_number(s: &str) -> usize {
 pub fn main() {
     let mut memory_register_count: usize = 0;
 
-    let contents = fs::read_to_string("asm/test.asm").unwrap();
+    let contents = fs::read_to_string("asm/fib.asm").unwrap();
     let contents = contents
         .lines()
         .map(|line| {
