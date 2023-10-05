@@ -1,13 +1,10 @@
-use std::arch::x86_64::_mm256_abs_epi16;
 use std::{cmp, env, fs, usize};
 
 use std::hash::Hash;
 
 use chiquito::ast::query::Queriable;
 use chiquito::ast::Expr;
-use chiquito::frontend::dsl::CircuitContext;
 use chiquito::{
-    ast::ToField,
     frontend::dsl::circuit,
     plonkish::backend::halo2::{chiquito2Halo2, ChiquitoHalo2Circuit},
     plonkish::compiler::{
@@ -17,7 +14,7 @@ use chiquito::{
     plonkish::ir::{assignments::AssignmentGenerator, Circuit},
 };
 use halo2_proofs::{dev::MockProver, halo2curves::bn256::Fr};
-use halo2curves::ff::{Field, PrimeField};
+use halo2curves::ff::PrimeField;
 
 fn vm_circuit<F: PrimeField + Eq + Hash>(
     memory_register_count: usize,
