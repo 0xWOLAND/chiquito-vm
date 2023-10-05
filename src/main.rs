@@ -1,3 +1,4 @@
+use std::arch::x86_64::_mm256_abs_epi16;
 use std::{cmp, fs, usize};
 
 use std::hash::Hash;
@@ -47,10 +48,7 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
             ctx.setup(|ctx| {
                 // memory should stay the same unless being updated
                 memory.iter().enumerate().for_each(|(i, &reg)| {
-                    ctx.transition(eq(
-                        (reg - reg.next()) * (Expr::from(1) - output[i].next()),
-                        0,
-                    ));
+                    ctx.transition(eq((reg - reg.next()) * (Expr::from(1) - output[i]), 0));
                 });
                 // there is only one active selector for each selector range
                 let mut constraints = [&read1, &read2, &output, &opcode]
@@ -174,6 +172,7 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
 
             let mut start = 0;
             argument_counts.iter().zip(opcodes).for_each(|(len, op)| {
+                let mut _current_memory = _memory.clone();
                 let mut _read1 = vec![F::ZERO; memory_register_count];
                 let mut _read2 = vec![F::ZERO; memory_register_count];
                 let mut _output = vec![F::ZERO; memory_register_count];
@@ -184,7 +183,7 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                     _read1[0] = F::ONE;
                     _read2[0] = F::ONE;
                     _output[args[0]] = F::ONE;
-                    _memory[args[0]] = F::from(args[1] as u64);
+                    _current_memory[args[0]] = F::from(args[1] as u64);
                     _free_input = F::from(args[1] as u64);
                     // set opcode register
                     _opcode[Opcode::Set.get()] = F::ONE;
@@ -192,21 +191,21 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                     _read1[args[1]] = F::ONE;
                     _read2[args[2]] = F::ONE;
                     _output[args[0]] = F::ONE;
-                    _memory[args[0]] = _memory[args[1]] * _memory[args[2]];
+                    _current_memory[args[0]] = _memory[args[1]] * _memory[args[2]];
                     // set opcode register
                     _opcode[Opcode::Mul.get()] = F::ONE;
                 } else if op == ADD {
                     _read1[args[1]] = F::ONE;
                     _read2[args[2]] = F::ONE;
                     _output[args[0]] = F::ONE;
-                    _memory[args[0]] = _memory[args[1]] + _memory[args[2]];
+                    _current_memory[args[0]] = _memory[args[1]] + _memory[args[2]];
                     // set opcode register
                     _opcode[Opcode::Add.get()] = F::ONE;
                 } else if op == NEG {
                     _read1[args[1]] = F::ONE;
                     _read2[0] = F::ONE;
                     _output[args[0]] = F::ONE;
-                    _memory[args[0]] = -F::ONE * _memory[args[1]];
+                    _current_memory[args[0]] = -F::ONE * _memory[args[1]];
                     // set opcode register
                     _opcode[Opcode::Neg.get()] = F::ONE;
                 } else if op == EQ {
@@ -235,6 +234,7 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                         _free_input: _free_input.clone(),
                     },
                 );
+                _memory = _current_memory;
                 start += len;
             });
             let clear_register = vec![F::ZERO; memory_register_count - 1]
@@ -248,6 +248,7 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
                 .map(|&x| x)
                 .collect::<Vec<F>>();
 
+            println!("memory -- {:?}", _memory);
             println!("clear register -- {:?}", clear_register);
             println!("clear opcodes -- {:?}", _opcode);
             ctx.add(
