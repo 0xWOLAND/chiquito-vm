@@ -16,7 +16,7 @@ zkVM in Chiquito supports the following instructions:
 
 Write Chiquito programs using these instructions to define variables, perform computations, and generate proofs of correctness. For example:
 
-```chiquito
+```asm
 set 0x0 10
 set 0x1 5
 mul 0x0 0x0 0x1
