@@ -1,5 +1,5 @@
 use std::arch::x86_64::_mm256_abs_epi16;
-use std::{cmp, fs, usize};
+use std::{cmp, env, fs, usize};
 
 use std::hash::Hash;
 
@@ -350,10 +350,20 @@ fn parse_number(s: &str) -> usize {
     usize::from_str_radix(s, 10).unwrap()
 }
 
+fn parse_args() -> String {
+    let args: Vec<String> = env::args().collect();
+    let asm = match args.len() {
+        1 => &args[0],
+        _ => "fib",
+    };
+    let asm = format!("asm/{}.asm", asm);
+    fs::read_to_string(asm).unwrap()
+}
+
 pub fn main() {
     let mut memory_register_count: usize = 0;
 
-    let contents = fs::read_to_string("asm/fib.asm").unwrap();
+    let contents = parse_args();
     let contents = contents
         .lines()
         .map(|line| {

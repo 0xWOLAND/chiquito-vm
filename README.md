@@ -23,4 +23,11 @@ mul 0x0 0x0 0x1
 out 0x0 50
 ```
 
+Run
+
+```bash
+cargo run -- fib # fibonacci sequence
+cargo run -- square # repeated squaring sequence
+```
+
 zkVM ensures secure computation without revealing values.
