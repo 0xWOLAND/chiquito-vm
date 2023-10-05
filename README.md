@@ -27,7 +27,7 @@ Run
 
 ```bash
 cargo run -- fib # fibonacci sequence
-cargo run -- square # repeated squaring sequence
+cargo run -- squares # repeated squaring sequence
 ```
 
 By default, `fib.asm` is used.
