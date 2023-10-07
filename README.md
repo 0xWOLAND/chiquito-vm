@@ -1,3 +1,4 @@
+# Chiquito Virtual Machine [![Rust](https://github.com/0xWOLAND/chiquito-vm/actions/workflows/rust.yml/badge.svg)](https://github.com/0xWOLAND/chiquito-vm/actions/workflows/rust.yml)
 `chiquito-vm` is a zkVM, a zero-knowledge virtual machine implemented using Chiquito, a Halo 2 DSL. zkVM enables secure, private computation with cryptographic guarantees.
 ## Instructions
 
