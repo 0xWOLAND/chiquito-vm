@@ -20,12 +20,168 @@ use halo2curves::ff::PrimeField;
 
 pub mod parse;
 use parse::*;
+#[derive(Clone)]
+struct RamParams {
+    operations: Vec<Operation>,
+    memory_register_count: usize,
+    opcode_count: usize,
+    ops_count: usize,
+}
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct CircuitParams {
     memory_register_count: usize,
     opcode_count: usize,
     ops_count: usize,
+}
+
+fn build_trace<F: PrimeField>(params: CircuitParams, ops: VMInput<F>) -> Vec<RoundInput<F>> {
+    let CircuitParams {
+        memory_register_count,
+        opcode_count,
+        ops_count,
+    } = params;
+
+    let VMInput {
+        opcodes,
+        argument_counts,
+        arguments,
+    } = ops;
+    let mut _memory = vec![F::ZERO; memory_register_count];
+
+    let mut computation_trace: Vec<RoundInput<F>> = Vec::new();
+
+    // possible opcodes as field elements
+    let SET: F = Opcode::Set.as_field();
+    let MUL: F = Opcode::Mul.as_field();
+    let ADD: F = Opcode::Add.as_field();
+    let NEG: F = Opcode::Neg.as_field();
+    let MOV: F = Opcode::Mov.as_field();
+    let EQ: F = Opcode::Eq.as_field();
+    let OUT: F = Opcode::Out.as_field();
+
+    let mut start = 0;
+    argument_counts
+        .iter()
+        .zip(opcodes)
+        .enumerate()
+        .for_each(|(_clock, (len, op))| {
+            let mut _current_memory = _memory.clone();
+            let mut _read1 = vec![F::ZERO; memory_register_count];
+            let mut _read2 = vec![F::ZERO; memory_register_count];
+            let mut _output = vec![F::ZERO; memory_register_count];
+            let mut _opcode = vec![F::ZERO; opcode_count];
+            let mut _free_input = F::ZERO;
+            let _clock = F::from(_clock as u64);
+            let args = arguments[start..start + len].to_vec();
+            if op == SET {
+                _read1[0] = F::ONE;
+                _read2[0] = F::ONE;
+                _output[args[0]] = F::ONE;
+                _current_memory[args[0]] = F::from(args[1] as u64);
+                _free_input = F::from(args[1] as u64);
+                // set opcode register
+                _opcode[Opcode::Set.get()] = F::ONE;
+            } else if op == MUL {
+                _read1[args[1]] = F::ONE;
+                _read2[args[2]] = F::ONE;
+                _output[args[0]] = F::ONE;
+                _current_memory[args[0]] = _memory[args[1]] * _memory[args[2]];
+                // set opcode register
+                _opcode[Opcode::Mul.get()] = F::ONE;
+            } else if op == ADD {
+                _read1[args[1]] = F::ONE;
+                _read2[args[2]] = F::ONE;
+                _output[args[0]] = F::ONE;
+                _current_memory[args[0]] = _memory[args[1]] + _memory[args[2]];
+                // set opcode register
+                _opcode[Opcode::Add.get()] = F::ONE;
+            } else if op == NEG {
+                _read1[args[1]] = F::ONE;
+                _read2[0] = F::ONE;
+                _output[args[0]] = F::ONE;
+                _current_memory[args[0]] = -F::ONE * _memory[args[1]];
+                // set opcode register
+                _opcode[Opcode::Neg.get()] = F::ONE;
+            } else if op == MOV {
+                _read1[0] = F::ONE;
+                _read2[args[1]] = F::ONE;
+                _output[args[0]] = F::ONE;
+                _current_memory[args[0]] = _current_memory[args[1]];
+                // set opcode register
+                _opcode[Opcode::Mov.get()] = F::ONE;
+            } else if op == EQ {
+                _read1[args[0]] = F::ONE;
+                _read2[args[1]] = F::ONE;
+                _output[0] = F::ONE;
+                // set opcode register
+                _opcode[Opcode::Eq.get()] = F::ONE;
+            } else if op == OUT {
+                _read1[args[0]] = F::ONE;
+                _read2[args[0]] = F::ONE;
+                _free_input = F::from(args[1] as u64);
+                _output[args[0]] = F::ONE;
+                _opcode[Opcode::Out.get()] = F::ONE;
+            }
+
+            println!("memory -- {:?}", _memory);
+            println!("read1 -- {:?}", _read1);
+            println!("read2 -- {:?}", _read2);
+            println!("output -- {:?}", _output);
+            println!("opcode -- {:?}", _opcode);
+            println!("free input -- {:?}", _free_input);
+
+            computation_trace.push(RoundInput {
+                _memory: _memory.clone(),
+                _read1,
+                _read2,
+                _output,
+                _opcode,
+                _free_input,
+                _clock,
+            });
+            _memory = _current_memory;
+            start += len;
+        });
+    let clear_register = vec![F::ZERO; memory_register_count - 1]
+        .iter()
+        .chain(&[F::ONE])
+        .map(|&x| x)
+        .collect::<Vec<F>>();
+    let _opcode = vec![F::ZERO; opcode_count - 1]
+        .iter()
+        .chain(&[F::ONE])
+        .map(|&x| x)
+        .collect::<Vec<F>>();
+    let _clock = F::from(arguments.len() as u64);
+
+    computation_trace.push(RoundInput {
+        _memory,
+        _read1: clear_register.clone(),
+        _read2: clear_register.clone(),
+        _output: clear_register.clone(),
+        _opcode,
+        _free_input: F::ZERO,
+        _clock,
+    });
+
+    computation_trace
+}
+
+fn vm_ram<F: PrimeField + Eq + Hash>(ctx: &mut CircuitContext<F, VMInput<F>>, params: RamParams) {
+    use chiquito::frontend::dsl::cb::*;
+
+    let RamParams {
+        memory_register_count,
+        opcode_count,
+        ops_count,
+        operations,
+    } = params;
+
+    let lookup_op = ctx.fixed("op");
+
+    ctx.pragma_num_steps(ops_count);
+    ctx.fixed_gen(move |ctx| {});
 }
 
 fn vm_circuit<F: PrimeField + Eq + Hash>(
@@ -175,149 +331,30 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
     ctx.pragma_num_steps(ops_count);
 
     ctx.trace(move |ctx, ops| {
-        let VMInput {
-            opcodes,
-            argument_counts,
-            arguments,
-        } = ops;
-        let mut _memory = vec![F::ZERO; memory_register_count];
+        let computation_trace = build_trace(params.clone(), ops);
 
-        // possible opcodes as field elements
-        let SET: F = Opcode::Set.as_field();
-        let MUL: F = Opcode::Mul.as_field();
-        let ADD: F = Opcode::Add.as_field();
-        let NEG: F = Opcode::Neg.as_field();
-        let MOV: F = Opcode::Mov.as_field();
-        let EQ: F = Opcode::Eq.as_field();
-        let OUT: F = Opcode::Out.as_field();
-
-        let mut start = 0;
-        argument_counts
+        computation_trace
             .iter()
-            .zip(opcodes)
-            .enumerate()
-            .for_each(|(_clock, (len, op))| {
-                let mut _current_memory = _memory.clone();
-                let mut _read1 = vec![F::ZERO; memory_register_count];
-                let mut _read2 = vec![F::ZERO; memory_register_count];
-                let mut _output = vec![F::ZERO; memory_register_count];
-                let mut _opcode = vec![F::ZERO; opcode_count];
-                let mut _free_input = F::ZERO;
-                let _clock = F::from(_clock as u64);
-                let args = arguments[start..start + len].to_vec();
-                if op == SET {
-                    _read1[0] = F::ONE;
-                    _read2[0] = F::ONE;
-                    _output[args[0]] = F::ONE;
-                    _current_memory[args[0]] = F::from(args[1] as u64);
-                    _free_input = F::from(args[1] as u64);
-                    // set opcode register
-                    _opcode[Opcode::Set.get()] = F::ONE;
-                } else if op == MUL {
-                    _read1[args[1]] = F::ONE;
-                    _read2[args[2]] = F::ONE;
-                    _output[args[0]] = F::ONE;
-                    _current_memory[args[0]] = _memory[args[1]] * _memory[args[2]];
-                    // set opcode register
-                    _opcode[Opcode::Mul.get()] = F::ONE;
-                } else if op == ADD {
-                    _read1[args[1]] = F::ONE;
-                    _read2[args[2]] = F::ONE;
-                    _output[args[0]] = F::ONE;
-                    _current_memory[args[0]] = _memory[args[1]] + _memory[args[2]];
-                    // set opcode register
-                    _opcode[Opcode::Add.get()] = F::ONE;
-                } else if op == NEG {
-                    _read1[args[1]] = F::ONE;
-                    _read2[0] = F::ONE;
-                    _output[args[0]] = F::ONE;
-                    _current_memory[args[0]] = -F::ONE * _memory[args[1]];
-                    // set opcode register
-                    _opcode[Opcode::Neg.get()] = F::ONE;
-                } else if op == MOV {
-                    _read1[0] = F::ONE;
-                    _read2[args[1]] = F::ONE;
-                    _output[args[0]] = F::ONE;
-                    _current_memory[args[0]] = _current_memory[args[1]];
-                    // set opcode register
-                    _opcode[Opcode::Mov.get()] = F::ONE;
-                } else if op == EQ {
-                    _read1[args[0]] = F::ONE;
-                    _read2[args[1]] = F::ONE;
-                    _output[0] = F::ONE;
-                    // set opcode register
-                    _opcode[Opcode::Eq.get()] = F::ONE;
-                } else if op == OUT {
-                    _read1[args[0]] = F::ONE;
-                    _read2[args[0]] = F::ONE;
-                    _free_input = F::from(args[1] as u64);
-                    _output[args[0]] = F::ONE;
-                    _opcode[Opcode::Out.get()] = F::ONE;
-                }
-
-                println!("memory -- {:?}", _memory);
-                println!("read1 -- {:?}", _read1);
-                println!("read2 -- {:?}", _read2);
-                println!("output -- {:?}", _output);
-                println!("opcode -- {:?}", _opcode);
-                println!("free input -- {:?}", _free_input);
-
-                ctx.add(
-                    &vm_step,
-                    RoundInput {
-                        _clock,
-                        _memory: _memory.clone(),
-                        _output: _output.clone(),
-                        _read1: _read1.clone(),
-                        _read2: _read2.clone(),
-                        _opcode: _opcode.clone(),
-                        _free_input: _free_input.clone(),
-                    },
-                );
-                _memory = _current_memory;
-                start += len;
-            });
-        let clear_register = vec![F::ZERO; memory_register_count - 1]
-            .iter()
-            .chain(&[F::ONE])
-            .map(|&x| x)
-            .collect::<Vec<F>>();
-        let _opcode = vec![F::ZERO; opcode_count - 1]
-            .iter()
-            .chain(&[F::ONE])
-            .map(|&x| x)
-            .collect::<Vec<F>>();
-        let _clock = F::from(arguments.len() as u64);
-
-        println!("memory -- {:?}", _memory);
-        // println!("clear register -- {:?}", clear_register);
-        // println!("clear opcodes -- {:?}", _opcode);
-        ctx.add(
-            &vm_step,
-            RoundInput {
-                _clock,
-                _memory,
-                _output: clear_register.clone(),
-                _read1: clear_register.clone(),
-                _read2: clear_register.clone(),
-                _opcode,
-                _free_input: F::ZERO,
-            },
-        );
+            .for_each(|values| ctx.add(&vm_step, values.clone()));
     })
 }
 
-fn vm_super_circuit<F: PrimeField + Eq + Hash>(
-    params: CircuitParams,
-) -> SuperCircuit<F, VMInput<F>> {
+fn vm_super_circuit<F: PrimeField + Eq + Hash>(params: RamParams) -> SuperCircuit<F, VMInput<F>> {
     super_circuit::<F, VMInput<F>, _>("vm", |ctx| {
-        let CircuitParams {
+        let single_config = config(SingleRowCellManager {}, SimpleStepSelectorBuilder {});
+        let RamParams {
+            operations: _,
             memory_register_count,
             opcode_count,
             ops_count,
         } = params;
-        let single_config = config(SingleRowCellManager {}, SimpleStepSelectorBuilder {});
-        let (vm, _) = ctx.sub_circuit(single_config, vm_circuit, params);
+
+        let vm_params = CircuitParams {
+            memory_register_count,
+            opcode_count,
+            ops_count,
+        };
+        let (vm, _) = ctx.sub_circuit(single_config, vm_circuit, vm_params);
 
         ctx.mapping(move |ctx, values| {
             ctx.map(&vm, values);
@@ -466,10 +503,11 @@ pub fn run_vm(file: String) -> Result<(), ()> {
     let ops_count = contents.len() + 1;
     let opcode_count = Opcode::COUNT;
 
-    let params = CircuitParams {
+    let params = RamParams {
         memory_register_count,
         opcode_count,
         ops_count,
+        operations: contents,
     };
 
     let super_circuit = vm_super_circuit(params);
