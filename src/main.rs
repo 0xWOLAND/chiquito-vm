@@ -1,4 +1,4 @@
-use chiquito_vm::{parse_args, run_vm};
+use chiquito_vm::{parse::parse_args, run_vm};
 pub fn main() {
     let contents = parse_args();
     let result = run_vm(contents);

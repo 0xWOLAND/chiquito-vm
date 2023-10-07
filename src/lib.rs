@@ -1,299 +1,328 @@
-use std::{cmp, env, fs, usize};
+use std::{cmp, fs, hash::Hash, usize};
 
-use std::hash::Hash;
-
-use chiquito::ast::query::Queriable;
-use chiquito::ast::Expr;
 use chiquito::{
-    frontend::dsl::circuit,
-    plonkish::backend::halo2::{chiquito2Halo2, ChiquitoHalo2Circuit},
-    plonkish::compiler::{
-        cell_manager::SingleRowCellManager, compile, config,
-        step_selector::SimpleStepSelectorBuilder,
+    ast::{query::Queriable, Expr},
+    frontend::dsl::{circuit, super_circuit, CircuitContext},
+    plonkish::{
+        backend::halo2::{
+            chiquito2Halo2, chiquitoSuperCircuit2Halo2, ChiquitoHalo2Circuit,
+            ChiquitoHalo2SuperCircuit,
+        },
+        compiler::{
+            cell_manager::SingleRowCellManager, compile, config,
+            step_selector::SimpleStepSelectorBuilder,
+        },
+        ir::{assignments::AssignmentGenerator, sc::SuperCircuit, Circuit},
     },
-    plonkish::ir::{assignments::AssignmentGenerator, Circuit},
 };
 use halo2_proofs::{dev::MockProver, halo2curves::bn256::Fr};
 use halo2curves::ff::PrimeField;
 
-fn vm_circuit<F: PrimeField + Eq + Hash>(
+pub mod parse;
+use parse::*;
+
+#[derive(Clone, Copy)]
+struct CircuitParams {
     memory_register_count: usize,
     opcode_count: usize,
     ops_count: usize,
-) -> (Circuit<F>, Option<AssignmentGenerator<F, VMInput<F>>>) {
+}
+
+fn vm_circuit<F: PrimeField + Eq + Hash>(
+    ctx: &mut CircuitContext<F, VMInput<F>>,
+    params: CircuitParams,
+) {
     use chiquito::frontend::dsl::cb::*;
 
-    let vm = circuit::<F, VMInput<F>, _>("vm", |ctx| {
-        let memory: Vec<Queriable<F>> = (0..memory_register_count)
-            .map(|i| ctx.forward(&format!("memory_register_{}", i)))
-            .collect();
-        let read1: Vec<Queriable<F>> = (0..memory_register_count)
-            .map(|i| ctx.forward(&format!("read1_register_{}", i)))
-            .collect();
-        let read2: Vec<Queriable<F>> = (0..memory_register_count)
-            .map(|i| ctx.forward(&format!("read2_register_{}", i)))
-            .collect();
-        let output: Vec<Queriable<F>> = (0..memory_register_count)
-            .map(|i| ctx.forward(&format!("output_{}", i)))
-            .collect();
-        let opcode: Vec<Queriable<F>> = (0..opcode_count)
-            .map(|i| ctx.forward(&format!("opcode_{}", i)))
-            .collect();
-        let free_input = ctx.forward("free_input");
+    let CircuitParams {
+        memory_register_count,
+        opcode_count,
+        ops_count,
+    } = params;
 
-        let vm_step = ctx.step_type_def("vm step", |ctx| {
-            ctx.setup(|ctx| {
-                // memory should stay the same unless being updated
-                memory.iter().enumerate().for_each(|(i, &reg)| {
-                    ctx.transition(eq((reg - reg.next()) * (Expr::from(1) - output[i]), 0));
-                });
-                // there is only one active selector for each selector range
-                let mut constraints = [&read1, &read2, &output, &opcode]
-                    .iter()
-                    .map(|selector_range| {
-                        selector_range
-                            .iter()
-                            .fold(Expr::from(0), |acc, &cur| acc + cur)
-                            - Expr::from(1)
-                    })
-                    .collect::<Vec<Expr<F>>>();
+    let memory: Vec<Queriable<F>> = (0..memory_register_count)
+        .map(|i| ctx.forward(&format!("memory_register_{}", i)))
+        .collect();
+    let read1: Vec<Queriable<F>> = (0..memory_register_count)
+        .map(|i| ctx.forward(&format!("read1_register_{}", i)))
+        .collect();
+    let read2: Vec<Queriable<F>> = (0..memory_register_count)
+        .map(|i| ctx.forward(&format!("read2_register_{}", i)))
+        .collect();
+    let output: Vec<Queriable<F>> = (0..memory_register_count)
+        .map(|i| ctx.forward(&format!("output_{}", i)))
+        .collect();
+    let opcode: Vec<Queriable<F>> = (0..opcode_count)
+        .map(|i| ctx.forward(&format!("opcode_{}", i)))
+        .collect();
+    let free_input = ctx.forward("free_input");
 
-                // Operation constraints
-                let _output: Expr<F> = output
-                    .iter()
-                    .zip(&memory)
-                    .map(|(&a, &b)| a * b.next())
-                    .fold(Expr::from(0), |acc, cur| acc + cur);
-                let _output_prev: Expr<F> = output
-                    .iter()
-                    .zip(&memory)
-                    .map(|(&a, &b)| a * b)
-                    .fold(Expr::from(0), |acc, cur| acc + cur);
-                let _read1: Expr<F> = read1
-                    .iter()
-                    .zip(&memory)
-                    .map(|(&a, &b)| a * b)
-                    .fold(Expr::from(0), |acc, cur| acc + cur);
-                let _read2: Expr<F> = read2
-                    .iter()
-                    .zip(&memory)
-                    .map(|(&a, &b)| a * b)
-                    .fold(Expr::from(0), |acc, cur| acc + cur);
-
-                let _set = (free_input - _output.clone()) * opcode[Opcode::get(Opcode::Set)];
-                constraints.push(_set);
-
-                let _add = (_read1.clone() + _read2.clone() - _output.clone())
-                    * opcode[Opcode::get(Opcode::Add)];
-                constraints.push(_add);
-
-                let _neg = (_read1.clone() + _output.clone()) * opcode[Opcode::get(Opcode::Neg)];
-                constraints.push(_neg);
-
-                let _mul = (_read1.clone() * _read2.clone() - _output.clone())
-                    * opcode[Opcode::get(Opcode::Mul)];
-                constraints.push(_mul);
-
-                let _mov = (_read2.clone() - _output.clone()) * opcode[Opcode::get(Opcode::Mov)];
-                constraints.push(_mov);
-
-                let _eq = (_read1 - _read2) * opcode[Opcode::get(Opcode::Eq)];
-                constraints.push(_eq);
-
-                let _eq2 = (_output.clone() - _output_prev) * opcode[Opcode::get(Opcode::Eq)];
-                constraints.push(_eq2);
-
-                let _out = (_output - free_input) * opcode[Opcode::get(Opcode::Out)];
-                constraints.push(_out);
-
-                ctx.transition(eq(
-                    constraints
-                        .iter()
-                        .fold(Expr::from(0), |acc, cur| acc + cur.clone()),
-                    0,
-                ));
+    let vm_step = ctx.step_type_def("vm step", |ctx| {
+        ctx.setup(|ctx| {
+            // memory should stay the same unless being updated
+            memory.iter().enumerate().for_each(|(i, &reg)| {
+                ctx.transition(eq((reg - reg.next()) * (Expr::from(1) - output[i]), 0));
             });
+            // there is only one active selector for each selector range
+            let mut constraints = [&read1, &read2, &output, &opcode]
+                .iter()
+                .map(|selector_range| {
+                    selector_range
+                        .iter()
+                        .fold(Expr::from(0), |acc, &cur| acc + cur)
+                        - Expr::from(1)
+                })
+                .collect::<Vec<Expr<F>>>();
 
-            ctx.wg(move |ctx, round_values: RoundInput<F>| {
-                let RoundInput {
-                    _memory,
-                    _output,
-                    _read1,
-                    _read2,
-                    _opcode,
-                    _free_input,
-                    _clock,
-                } = round_values;
+            // Operation constraints
+            let _output: Expr<F> = output
+                .iter()
+                .zip(&memory)
+                .map(|(&a, &b)| a * b.next())
+                .fold(Expr::from(0), |acc, cur| acc + cur);
+            let _output_prev: Expr<F> = output
+                .iter()
+                .zip(&memory)
+                .map(|(&a, &b)| a * b)
+                .fold(Expr::from(0), |acc, cur| acc + cur);
+            let _read1: Expr<F> = read1
+                .iter()
+                .zip(&memory)
+                .map(|(&a, &b)| a * b)
+                .fold(Expr::from(0), |acc, cur| acc + cur);
+            let _read2: Expr<F> = read2
+                .iter()
+                .zip(&memory)
+                .map(|(&a, &b)| a * b)
+                .fold(Expr::from(0), |acc, cur| acc + cur);
 
-                // println!("memory_register_count: {:?}", memory_register_count);
+            let _set = (free_input - _output.clone()) * opcode[Opcode::get(Opcode::Set)];
+            constraints.push(_set);
 
-                memory
+            let _add = (_read1.clone() + _read2.clone() - _output.clone())
+                * opcode[Opcode::get(Opcode::Add)];
+            constraints.push(_add);
+
+            let _neg = (_read1.clone() + _output.clone()) * opcode[Opcode::get(Opcode::Neg)];
+            constraints.push(_neg);
+
+            let _mul = (_read1.clone() * _read2.clone() - _output.clone())
+                * opcode[Opcode::get(Opcode::Mul)];
+            constraints.push(_mul);
+
+            let _mov = (_read2.clone() - _output.clone()) * opcode[Opcode::get(Opcode::Mov)];
+            constraints.push(_mov);
+
+            let _eq = (_read1 - _read2) * opcode[Opcode::get(Opcode::Eq)];
+            constraints.push(_eq);
+
+            let _eq2 = (_output.clone() - _output_prev) * opcode[Opcode::get(Opcode::Eq)];
+            constraints.push(_eq2);
+
+            let _out = (_output - free_input) * opcode[Opcode::get(Opcode::Out)];
+            constraints.push(_out);
+
+            ctx.transition(eq(
+                constraints
                     .iter()
-                    .zip(_memory)
-                    .for_each(|(&a, b)| ctx.assign(a, b));
-
-                read1
-                    .iter()
-                    .zip(_read1)
-                    .for_each(|(&a, b)| ctx.assign(a, b));
-
-                read2
-                    .iter()
-                    .zip(_read2)
-                    .for_each(|(&a, b)| ctx.assign(a, b));
-
-                output
-                    .iter()
-                    .zip(_output)
-                    .for_each(|(&a, b)| ctx.assign(a, b));
-
-                opcode
-                    .iter()
-                    .zip(_opcode)
-                    .for_each(|(&a, b)| ctx.assign(a, b));
-
-                ctx.assign(free_input, _free_input)
-            })
+                    .fold(Expr::from(0), |acc, cur| acc + cur.clone()),
+                0,
+            ));
         });
 
-        ctx.pragma_num_steps(ops_count);
+        ctx.wg(move |ctx, round_values: RoundInput<F>| {
+            let RoundInput {
+                _memory,
+                _output,
+                _read1,
+                _read2,
+                _opcode,
+                _free_input,
+                _clock,
+            } = round_values;
 
-        ctx.trace(move |ctx, ops| {
-            let VMInput {
-                opcodes,
-                argument_counts,
-                arguments,
-            } = ops;
-            let mut _memory = vec![F::ZERO; memory_register_count];
+            // println!("memory_register_count: {:?}", memory_register_count);
 
-            // possible opcodes as field elements
-            let SET: F = Opcode::Set.as_field();
-            let MUL: F = Opcode::Mul.as_field();
-            let ADD: F = Opcode::Add.as_field();
-            let NEG: F = Opcode::Neg.as_field();
-            let MOV: F = Opcode::Mov.as_field();
-            let EQ: F = Opcode::Eq.as_field();
-            let OUT: F = Opcode::Out.as_field();
-
-            let mut start = 0;
-            argument_counts
+            memory
                 .iter()
-                .zip(opcodes)
-                .enumerate()
-                .for_each(|(_clock, (len, op))| {
-                    let mut _current_memory = _memory.clone();
-                    let mut _read1 = vec![F::ZERO; memory_register_count];
-                    let mut _read2 = vec![F::ZERO; memory_register_count];
-                    let mut _output = vec![F::ZERO; memory_register_count];
-                    let mut _opcode = vec![F::ZERO; opcode_count];
-                    let mut _free_input = F::ZERO;
-                    let _clock = F::from(_clock as u64);
-                    let args = arguments[start..start + len].to_vec();
-                    if op == SET {
-                        _read1[0] = F::ONE;
-                        _read2[0] = F::ONE;
-                        _output[args[0]] = F::ONE;
-                        _current_memory[args[0]] = F::from(args[1] as u64);
-                        _free_input = F::from(args[1] as u64);
-                        // set opcode register
-                        _opcode[Opcode::Set.get()] = F::ONE;
-                    } else if op == MUL {
-                        _read1[args[1]] = F::ONE;
-                        _read2[args[2]] = F::ONE;
-                        _output[args[0]] = F::ONE;
-                        _current_memory[args[0]] = _memory[args[1]] * _memory[args[2]];
-                        // set opcode register
-                        _opcode[Opcode::Mul.get()] = F::ONE;
-                    } else if op == ADD {
-                        _read1[args[1]] = F::ONE;
-                        _read2[args[2]] = F::ONE;
-                        _output[args[0]] = F::ONE;
-                        _current_memory[args[0]] = _memory[args[1]] + _memory[args[2]];
-                        // set opcode register
-                        _opcode[Opcode::Add.get()] = F::ONE;
-                    } else if op == NEG {
-                        _read1[args[1]] = F::ONE;
-                        _read2[0] = F::ONE;
-                        _output[args[0]] = F::ONE;
-                        _current_memory[args[0]] = -F::ONE * _memory[args[1]];
-                        // set opcode register
-                        _opcode[Opcode::Neg.get()] = F::ONE;
-                    } else if op == MOV {
-                        _read1[0] = F::ONE;
-                        _read2[args[1]] = F::ONE;
-                        _output[args[0]] = F::ONE;
-                        _current_memory[args[0]] = _current_memory[args[1]];
-                        // set opcode register
-                        _opcode[Opcode::Mov.get()] = F::ONE;
-                    } else if op == EQ {
-                        _read1[args[0]] = F::ONE;
-                        _read2[args[1]] = F::ONE;
-                        _output[0] = F::ONE;
-                        // set opcode register
-                        _opcode[Opcode::Eq.get()] = F::ONE;
-                    } else if op == OUT {
-                        _read1[args[0]] = F::ONE;
-                        _read2[args[0]] = F::ONE;
-                        _free_input = F::from(args[1] as u64);
-                        _output[args[0]] = F::ONE;
-                        _opcode[Opcode::Out.get()] = F::ONE;
-                    }
+                .zip(_memory)
+                .for_each(|(&a, b)| ctx.assign(a, b));
 
-                    println!("memory -- {:?}", _memory);
-                    println!("read1 -- {:?}", _read1);
-                    println!("read2 -- {:?}", _read2);
-                    println!("output -- {:?}", _output);
-                    println!("opcode -- {:?}", _opcode);
-                    println!("free input -- {:?}", _free_input);
-
-                    ctx.add(
-                        &vm_step,
-                        RoundInput {
-                            _clock,
-                            _memory: _memory.clone(),
-                            _output: _output.clone(),
-                            _read1: _read1.clone(),
-                            _read2: _read2.clone(),
-                            _opcode: _opcode.clone(),
-                            _free_input: _free_input.clone(),
-                        },
-                    );
-                    _memory = _current_memory;
-                    start += len;
-                });
-            let clear_register = vec![F::ZERO; memory_register_count - 1]
+            read1
                 .iter()
-                .chain(&[F::ONE])
-                .map(|&x| x)
-                .collect::<Vec<F>>();
-            let _opcode = vec![F::ZERO; opcode_count - 1]
-                .iter()
-                .chain(&[F::ONE])
-                .map(|&x| x)
-                .collect::<Vec<F>>();
-            let _clock = F::from(arguments.len() as u64);
+                .zip(_read1)
+                .for_each(|(&a, b)| ctx.assign(a, b));
 
-            println!("memory -- {:?}", _memory);
-            // println!("clear register -- {:?}", clear_register);
-            // println!("clear opcodes -- {:?}", _opcode);
-            ctx.add(
-                &vm_step,
-                RoundInput {
-                    _clock,
-                    _memory,
-                    _output: clear_register.clone(),
-                    _read1: clear_register.clone(),
-                    _read2: clear_register.clone(),
-                    _opcode,
-                    _free_input: F::ZERO,
-                },
-            );
+            read2
+                .iter()
+                .zip(_read2)
+                .for_each(|(&a, b)| ctx.assign(a, b));
+
+            output
+                .iter()
+                .zip(_output)
+                .for_each(|(&a, b)| ctx.assign(a, b));
+
+            opcode
+                .iter()
+                .zip(_opcode)
+                .for_each(|(&a, b)| ctx.assign(a, b));
+
+            ctx.assign(free_input, _free_input)
         })
     });
-    compile(
-        config(SingleRowCellManager {}, SimpleStepSelectorBuilder {}),
-        &vm,
-    )
+
+    ctx.pragma_num_steps(ops_count);
+
+    ctx.trace(move |ctx, ops| {
+        let VMInput {
+            opcodes,
+            argument_counts,
+            arguments,
+        } = ops;
+        let mut _memory = vec![F::ZERO; memory_register_count];
+
+        // possible opcodes as field elements
+        let SET: F = Opcode::Set.as_field();
+        let MUL: F = Opcode::Mul.as_field();
+        let ADD: F = Opcode::Add.as_field();
+        let NEG: F = Opcode::Neg.as_field();
+        let MOV: F = Opcode::Mov.as_field();
+        let EQ: F = Opcode::Eq.as_field();
+        let OUT: F = Opcode::Out.as_field();
+
+        let mut start = 0;
+        argument_counts
+            .iter()
+            .zip(opcodes)
+            .enumerate()
+            .for_each(|(_clock, (len, op))| {
+                let mut _current_memory = _memory.clone();
+                let mut _read1 = vec![F::ZERO; memory_register_count];
+                let mut _read2 = vec![F::ZERO; memory_register_count];
+                let mut _output = vec![F::ZERO; memory_register_count];
+                let mut _opcode = vec![F::ZERO; opcode_count];
+                let mut _free_input = F::ZERO;
+                let _clock = F::from(_clock as u64);
+                let args = arguments[start..start + len].to_vec();
+                if op == SET {
+                    _read1[0] = F::ONE;
+                    _read2[0] = F::ONE;
+                    _output[args[0]] = F::ONE;
+                    _current_memory[args[0]] = F::from(args[1] as u64);
+                    _free_input = F::from(args[1] as u64);
+                    // set opcode register
+                    _opcode[Opcode::Set.get()] = F::ONE;
+                } else if op == MUL {
+                    _read1[args[1]] = F::ONE;
+                    _read2[args[2]] = F::ONE;
+                    _output[args[0]] = F::ONE;
+                    _current_memory[args[0]] = _memory[args[1]] * _memory[args[2]];
+                    // set opcode register
+                    _opcode[Opcode::Mul.get()] = F::ONE;
+                } else if op == ADD {
+                    _read1[args[1]] = F::ONE;
+                    _read2[args[2]] = F::ONE;
+                    _output[args[0]] = F::ONE;
+                    _current_memory[args[0]] = _memory[args[1]] + _memory[args[2]];
+                    // set opcode register
+                    _opcode[Opcode::Add.get()] = F::ONE;
+                } else if op == NEG {
+                    _read1[args[1]] = F::ONE;
+                    _read2[0] = F::ONE;
+                    _output[args[0]] = F::ONE;
+                    _current_memory[args[0]] = -F::ONE * _memory[args[1]];
+                    // set opcode register
+                    _opcode[Opcode::Neg.get()] = F::ONE;
+                } else if op == MOV {
+                    _read1[0] = F::ONE;
+                    _read2[args[1]] = F::ONE;
+                    _output[args[0]] = F::ONE;
+                    _current_memory[args[0]] = _current_memory[args[1]];
+                    // set opcode register
+                    _opcode[Opcode::Mov.get()] = F::ONE;
+                } else if op == EQ {
+                    _read1[args[0]] = F::ONE;
+                    _read2[args[1]] = F::ONE;
+                    _output[0] = F::ONE;
+                    // set opcode register
+                    _opcode[Opcode::Eq.get()] = F::ONE;
+                } else if op == OUT {
+                    _read1[args[0]] = F::ONE;
+                    _read2[args[0]] = F::ONE;
+                    _free_input = F::from(args[1] as u64);
+                    _output[args[0]] = F::ONE;
+                    _opcode[Opcode::Out.get()] = F::ONE;
+                }
+
+                println!("memory -- {:?}", _memory);
+                println!("read1 -- {:?}", _read1);
+                println!("read2 -- {:?}", _read2);
+                println!("output -- {:?}", _output);
+                println!("opcode -- {:?}", _opcode);
+                println!("free input -- {:?}", _free_input);
+
+                ctx.add(
+                    &vm_step,
+                    RoundInput {
+                        _clock,
+                        _memory: _memory.clone(),
+                        _output: _output.clone(),
+                        _read1: _read1.clone(),
+                        _read2: _read2.clone(),
+                        _opcode: _opcode.clone(),
+                        _free_input: _free_input.clone(),
+                    },
+                );
+                _memory = _current_memory;
+                start += len;
+            });
+        let clear_register = vec![F::ZERO; memory_register_count - 1]
+            .iter()
+            .chain(&[F::ONE])
+            .map(|&x| x)
+            .collect::<Vec<F>>();
+        let _opcode = vec![F::ZERO; opcode_count - 1]
+            .iter()
+            .chain(&[F::ONE])
+            .map(|&x| x)
+            .collect::<Vec<F>>();
+        let _clock = F::from(arguments.len() as u64);
+
+        println!("memory -- {:?}", _memory);
+        // println!("clear register -- {:?}", clear_register);
+        // println!("clear opcodes -- {:?}", _opcode);
+        ctx.add(
+            &vm_step,
+            RoundInput {
+                _clock,
+                _memory,
+                _output: clear_register.clone(),
+                _read1: clear_register.clone(),
+                _read2: clear_register.clone(),
+                _opcode,
+                _free_input: F::ZERO,
+            },
+        );
+    })
+}
+
+fn vm_super_circuit<F: PrimeField + Eq + Hash>(
+    params: CircuitParams,
+) -> SuperCircuit<F, VMInput<F>> {
+    super_circuit::<F, VMInput<F>, _>("vm", |ctx| {
+        let CircuitParams {
+            memory_register_count,
+            opcode_count,
+            ops_count,
+        } = params;
+        let single_config = config(SingleRowCellManager {}, SimpleStepSelectorBuilder {});
+        let (vm, _) = ctx.sub_circuit(single_config, vm_circuit, params);
+
+        ctx.mapping(move |ctx, values| {
+            ctx.map(&vm, values);
+        })
+    })
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -348,24 +377,6 @@ struct VMInput<F: PrimeField> {
     opcodes: Vec<F>,
     argument_counts: Vec<usize>,
     arguments: Vec<usize>,
-}
-
-fn parse_number(s: &str) -> usize {
-    if s.contains("0x") {
-        return usize::from_str_radix(s.strip_prefix("0x").unwrap(), 16).unwrap();
-    }
-    usize::from_str_radix(s, 10).unwrap()
-}
-
-pub fn parse_args() -> String {
-    let args: Vec<String> = env::args().collect();
-    let asm = match args.len() {
-        2 => &args[1],
-        _ => "fib",
-    };
-    let asm = format!("asm/{}.asm", asm);
-    println!("reading from {asm}...");
-    asm
 }
 
 pub fn run_vm(file: String) -> Result<(), ()> {
@@ -455,16 +466,20 @@ pub fn run_vm(file: String) -> Result<(), ()> {
     let ops_count = contents.len() + 1;
     let opcode_count = Opcode::COUNT;
 
-    let (chiquito, wit_gen) = vm_circuit(memory_register_count, opcode_count, ops_count);
-    let compiled = chiquito2Halo2(chiquito);
-    let circuit = ChiquitoHalo2Circuit::new(
+    let params = CircuitParams {
+        memory_register_count,
+        opcode_count,
+        ops_count,
+    };
+
+    let super_circuit = vm_super_circuit(params);
+    let compiled = chiquitoSuperCircuit2Halo2(&super_circuit);
+    let circuit = ChiquitoHalo2SuperCircuit::new(
         compiled,
-        wit_gen.map(|x| {
-            x.generate(VMInput {
-                opcodes,
-                argument_counts,
-                arguments,
-            })
+        super_circuit.get_mapping().generate(VMInput {
+            opcodes,
+            argument_counts,
+            arguments,
         }),
     );
 
@@ -479,37 +494,6 @@ pub fn run_vm(file: String) -> Result<(), ()> {
                 println!("{}", failure);
             }
             Err(())
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::parse_number;
-
-    #[test]
-    fn check_hex_parsing() {
-        (0..10).into_iter().for_each(|x| {
-            let hex = format!("0x{}", x);
-            assert_eq!(parse_number(&hex), x);
-        })
-    }
-
-    #[test]
-    fn check() {
-        let lengths = vec![3, 5, 6, 7, 3, 6];
-        let tot: usize = lengths.iter().sum();
-        let arr: Vec<u64> = vec![10; tot]
-            .iter()
-            .enumerate()
-            .map(|(i, &x)| i as u64)
-            .collect();
-
-        let mut cur = 0;
-        for len in lengths {
-            let x = arr[cur..cur + len].to_vec();
-            cur += len;
-            println!("{:?}", x);
         }
     }
 }
