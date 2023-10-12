@@ -20,13 +20,6 @@ use halo2curves::ff::PrimeField;
 
 pub mod parse;
 use parse::*;
-#[derive(Clone)]
-struct RamParams {
-    operations: Vec<Operation>,
-    memory_register_count: usize,
-    opcode_count: usize,
-    ops_count: usize,
-}
 
 #[derive(Clone)]
 struct CircuitParams {
@@ -166,22 +159,6 @@ fn build_trace<F: PrimeField>(params: CircuitParams, ops: VMInput<F>) -> Vec<Rou
     });
 
     computation_trace
-}
-
-fn vm_ram<F: PrimeField + Eq + Hash>(ctx: &mut CircuitContext<F, VMInput<F>>, params: RamParams) {
-    use chiquito::frontend::dsl::cb::*;
-
-    let RamParams {
-        memory_register_count,
-        opcode_count,
-        ops_count,
-        operations,
-    } = params;
-
-    let lookup_op = ctx.fixed("op");
-
-    ctx.pragma_num_steps(ops_count);
-    ctx.fixed_gen(move |ctx| {});
 }
 
 fn vm_circuit<F: PrimeField + Eq + Hash>(
@@ -339,22 +316,12 @@ fn vm_circuit<F: PrimeField + Eq + Hash>(
     })
 }
 
-fn vm_super_circuit<F: PrimeField + Eq + Hash>(params: RamParams) -> SuperCircuit<F, VMInput<F>> {
+fn vm_super_circuit<F: PrimeField + Eq + Hash>(
+    params: CircuitParams,
+) -> SuperCircuit<F, VMInput<F>> {
     super_circuit::<F, VMInput<F>, _>("vm", |ctx| {
         let single_config = config(SingleRowCellManager {}, SimpleStepSelectorBuilder {});
-        let RamParams {
-            operations: _,
-            memory_register_count,
-            opcode_count,
-            ops_count,
-        } = params;
-
-        let vm_params = CircuitParams {
-            memory_register_count,
-            opcode_count,
-            ops_count,
-        };
-        let (vm, _) = ctx.sub_circuit(single_config, vm_circuit, vm_params);
+        let (vm, _) = ctx.sub_circuit(single_config, vm_circuit, params.clone());
 
         ctx.mapping(move |ctx, values| {
             ctx.map(&vm, values);
@@ -503,11 +470,10 @@ pub fn run_vm(file: String) -> Result<(), ()> {
     let ops_count = contents.len() + 1;
     let opcode_count = Opcode::COUNT;
 
-    let params = RamParams {
+    let params = CircuitParams {
         memory_register_count,
         opcode_count,
         ops_count,
-        operations: contents,
     };
 
     let super_circuit = vm_super_circuit(params);
